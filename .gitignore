@@ -1,6 +1,5 @@
 *.pyc
 data/news.2009.en.shuffled.unique
-cache/training_data.pickle
-cache/evaluation_data.pickle
-out/model_output.pth
-writeup.odt
+*.pickle
+*.pth
+*.odt
