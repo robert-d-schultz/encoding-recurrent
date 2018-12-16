@@ -6,153 +6,127 @@ from torch.nn.utils.rnn import PackedSequence, pad_packed_sequence, pack_padded_
 import random
 import chardet
 import pickle
+import sklearn.metrics
+
+import sys
 
 # This is a recurrent neural network that classifies documents by their encoding
 # The input to the neural network is raw bytes
 # Newswire data is used for training, this program reencodes it
 # The model is compared to chardet's detect() function
 
-
-# seed
+# Seed
 seed = random.randint(1, 10000)
 print("Random Seed: ", seed)
 random.seed(seed)
 torch.manual_seed(seed)
 
-n_classes = 4
+# Gpu stuff
+ngpu = 1
+device = torch.device("cuda:0" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
 
-encodings = [ "ascii"
-            , "ISO-8859-1"
-            , "Windows-1252"
+# Parameters
+encodings = [ "Windows-1252"
             , "utf-8"
+            #, "UTF-16"
+            #, "UTF-32"
             ]
+n_classes = len(encodings)
 
-# These are the top encodings used for websites
-encodings_top = [ "utf-8"
-                , "ISO-8859-1"
-                , "Windows-1251"
-                , "Windows-1252"
-                , "SHIFT_JIS"
-                , "GB2312"
-                , "EUC-KR"
-                , "ISO-8859-2"
-                # , "GBK" #chardet doesn't support?
-                , "Windows-1250"
-                , "EUC-JP"
-                , "Big5"
-                #, "ISO-8859-15" #chardet doesn't support?
-                #, "Windows-1256" #chardet doesn't support?
-                , "ISO-8859-9"
-                , "Windows-1254"
-                ]
+batch_size = 25
+n_epochs = 1
 
-# These are the supported encodings for chardet
-encodings_chardet = [ "Big5"
-                    , "GB2312"
-                    , "GB18030"
-                    #, "EUC-TW" #python doesn't support
-                    , "HZ-GB-2312"
-                    #, "ISO-2022-CN" #python doesn't support
-                    , "EUC-JP"
-                    , "SHIFT_JIS"
-                    , "ISO-2022-JP"
-                    , "EUC-KR"
-                    , "ISO-2022-KR"
-                    , "KOI8-R"
-                    , "MacCyrillic"
-                    , "IBM855"
-                    , "IBM866"
-                    , "ISO-8859-5"
-                    , "Windows-1251"
-                    , "ISO-8859-2"
-                    , "Windows-1250"
-                    , "ISO-8859-5"
-                    , "Windows-1251"
-                    , "ISO-8859-1"
-                    , "Windows-1252"
-                    , "ISO-8859-7"
-                    , "Windows-1253"
-                    , "Windows-1254"
-                    , "ISO-8859-8"
-                    , "Windows-1255"
-                    , "ISO-8859-9"
-                    , "TIS-620"
-                    , "UTF-32"
-                    , "UTF-16"
-                    , "utf-8"
-                    , "ascii"
-                    ]
+input_size = 3
+hidden_size = 32
+layer_n = 1
+output_size = n_classes
+
+lr = 0.0001
+criterion = nn.NLLLoss()
 
 training_data = "./data/news.2009.en.shuffled.unique"
 
+# Creates training and evauation sets
 def preprocess_data():
     with open(training_data, mode="r", encoding="utf_8") as f:
-        train_n = 1000
-        ns = [0, 0, 0, 0]
+
+        # Training set
+        print("Building training set...")
+        train_n = 900000
         train_out = []
         for line in f:
-            if(ns == [train_n, train_n, train_n, train_n]):
-                break
-            #print("New line.")
             string = f.readline()
-            for i in range(0, n_classes):
+
+            # Strip newline character from end
+            string = string.strip()
+
+            enc_strings = []
+            labels = []
+            for i in range(n_classes):
                 try:
-                    #print(str(ns))
-                    #print("Attempting to encode as " + str(i) + "...")
-
-                    encoded = string.encode(encodings[i])
-
-                    bytes = [x for x in encoded]
-
-                    enc_tensor = [0]*n_classes
-                    enc_tensor[i] = 1
-                    enc_tensor = torch.tensor(enc_tensor, dtype=torch.long)
-
-                    bytes_tensor = [[b] for b in bytes]
-                    bytes_tensor = torch.tensor(bytes_tensor, dtype=torch.float)
-
-                    if (ns[i] >= train_n):
-                        #print("Too much " + str(i) + ", skipping.")
-                        break
-
-                    if (ns[i] % 50 == 0):
-                        print(str(ns[i]) + "/" + str(train_n) + " for " + str(i))
-
-                    #print("Success")
-                    ns[i] += 1
-                    train_out.append((bytes_tensor, enc_tensor))
-                    break
-                except (UnicodeEncodeError):
-                    #print("Failed")
+                    enc_string = string.encode(encodings[i])
+                    enc_strings.append(enc_string)
+                    labels.append(i)
+                except UnicodeEncodeError:
                     continue
 
-        eval_n = 1000
+            # If the string encodes to the same bytes for any two classes, then its not useful for training
+            if len(set(enc_strings)) < len(enc_strings):
+                continue
+            else:
+                for enc_string, label in zip(enc_strings, labels):
+                    bytes = [x for x in enc_string]
+
+                    # bigrams, or maybe "bi-bytes"?
+                    bytes_tensor = list(zip(*[bytes[i:] for i in range(input_size)]))
+
+                    bytes_tensor = torch.tensor(bytes_tensor, dtype=torch.float).cuda()
+
+                    enc_tensor = torch.tensor(label, dtype=torch.long).cuda()
+
+                    train_out.append((bytes_tensor, enc_tensor, []))
+                    if len(train_out) % 1000 == 0:
+                        print(str(len(train_out)) + "/" + str(train_n))
+
+            if train_n <= len(train_out):
+                break
+
+        # Evaluation set
+        print("Building evaluation set...")
+        eval_n = 100000
         eval_out = []
         for line in f:
             string = f.readline()
-            for i in range(0, n_classes):
+
+            string = string.strip()
+
+            enc_strings = []
+            labels = []
+            for i in range(n_classes):
                 try:
-                    #print("Attempting to encode as " + str(i) + "...")
-
-                    encoded = string.encode(encodings[i])
-
-                    bytes = [x for x in encoded]
-
-                    enc_tensor = [0]*n_classes
-                    enc_tensor[i] = 1
-                    enc_tensor = torch.tensor(enc_tensor, dtype=torch.long)
-
-                    bytes_tensor = [[b] for b in bytes]
-                    bytes_tensor = torch.tensor(bytes_tensor, dtype=torch.float)
-
-                    #print("Success")
-                    eval_n -= 1
-                    eval_out.append((bytes_tensor, enc_tensor, i, encoded))
-                    break
-                except (UnicodeEncodeError):
-                    #print("Failed")
+                    enc_string = string.encode(encodings[i])
+                    enc_strings.append(enc_string)
+                    labels.append(i)
+                except UnicodeEncodeError:
                     continue
-            if(eval_n == 0):
+
+            if len(set(enc_strings)) < len(enc_strings):
+                continue
+            else:
+                for enc_string, label in zip(enc_strings, labels):
+                    bytes = [x for x in enc_string]
+
+                    bytes_tensor = list(zip(*[bytes[i:] for i in range(input_size)]))
+
+                    bytes_tensor = torch.tensor(bytes_tensor, dtype=torch.float).cuda()
+
+                    enc_tensor = torch.tensor(label, dtype=torch.long).cuda()
+
+                    eval_out.append((bytes_tensor, enc_tensor, enc_string))
+                    if len(eval_out) % 1000 == 0:
+                        print(str(len(eval_out)) + "/" + str(eval_n))
+
+            if eval_n <= len(eval_out):
                 break
 
     random.shuffle(train_out)
@@ -164,69 +138,57 @@ def preprocess_data():
 
 
 
-class RNN(nn.Module):
-    def __init__(self, input_size, hidden_size, layer_n, output_size):
-        super(RNN, self).__init__()
+class LSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, layer_n, output_size, ngpu):
+        super(LSTM, self).__init__()
+        self.ngpu = ngpu
 
         self.hidden_size = hidden_size
         self.layer_n = layer_n
 
-        self.rnn = nn.RNN(input_size, hidden_size, layer_n, batch_first=True,
-                          nonlinearity='relu')
+        self.lstm = nn.LSTM(input_size, hidden_size, layer_n, batch_first=True)
 
-        self.fc = nn.Sequential(
+        self.linear = nn.Sequential(
                     nn.Linear(hidden_size, output_size),
-                    nn.Dropout(0.1),
+                    #nn.Dropout(0.1),
                     nn.LogSoftmax(dim=1)
                     )
 
-    def forward(self, x, batch_size):
-        h0 = Variable(torch.zeros(self.layer_n, batch_size, self.hidden_size))
+    def forward(self, x):
+        h0 = Variable(torch.zeros(self.layer_n, x.batch_sizes[0].item(), self.hidden_size)).cuda()
+        c0 = Variable(torch.zeros(self.layer_n, x.batch_sizes[0].item(), self.hidden_size)).cuda()
 
-        if (type(x) == PackedSequence):
-            out, hn = self.rnn(x, h0)
-            data = out.data
-            out = PackedSequence(self.fc(data), out.batch_sizes)
-        else:
-            out, hn = self.rnn(x, h0)
-            out = self.fc(out)
-        return out
+        out, (hn, cn) = self.lstm(x, (h0, c0))
+
+        #print(out)
+        data = out.data
+        out_ = PackedSequence(self.linear(data), out.batch_sizes)
+
+        return self.linear(hn[-1]), out_
 
 
-batch_size = 50
-n_epochs = 5
-
+# This pads batches so they can be packaged into PackedSequence's in DataLoader's
+# I have no idea why this isn't a standard function
 def pad_packed_collate(batch):
     if len(batch) == 1:
-        sigs, labels = batch[0][0], batch[0][1]
-        #sigs = sigs.t()
+        sigs, labels, enc_strings = batch[0][0], batch[0][1], batch[0][2]
         lengths = [sigs.size(0)]
         sigs.unsqueeze_(0)
         labels.unsqueeze_(0)
+        enc_strings = [enc_strings]
     if len(batch) > 1:
-        sigs, labels, lengths = zip(*[(a, b, a.size(0)) for (a,b) in sorted(batch, key=lambda x: x[0].size(0), reverse=True)])
+        sigs, labels, enc_strings, lengths = zip(*[(a, b, c, a.size(0)) for (a,b,c) in sorted(batch, key=lambda x: x[0].size(0), reverse=True)])
         max_len = sigs[0].size(0)
-        sigs = [torch.cat((s, torch.zeros((max_len - s.size(0), 1), dtype=torch.float)), dim=0) if s.size(0) != max_len else s for s in sigs]
+        sigs = [torch.cat((s, torch.zeros((max_len - s.size(0), input_size), dtype=torch.float).cuda()), dim=0) if s.size(0) != max_len else s for s in sigs]
         sigs = torch.stack(sigs, 0)
         labels = torch.stack(labels, 0)
-    packed_batch = pack_padded_sequence(Variable(sigs), list(lengths), batch_first=True)
-    return packed_batch, labels
+    packed_batch = pack_padded_sequence(Variable(sigs).cuda(), list(lengths), batch_first=True)
+    return packed_batch, labels, list(enc_strings)
 
 
-input_size = 1
-hidden_size = 128
-layer_n = 3
-output_size = n_classes
-model = RNN(input_size, hidden_size, layer_n, output_size)
+model = LSTM(input_size, hidden_size, layer_n, output_size, ngpu).to(device)
 
-
-lr = 0.001
-criterion = nn.NLLLoss()
-#criterion = nn.CrossEntropyLoss()
-
-#optimizer = torch.optim.SGD(rnn.parameters(), lr=lr)
 optimizer = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
-
 
 # Training
 def training():
@@ -234,59 +196,70 @@ def training():
     with open('cache/training_data.pickle','rb') as g:
         t_data = pickle.load(g)
 
-    train_loader = torch.utils.data.DataLoader(t_data, batch_size=batch_size, collate_fn=pad_packed_collate, shuffle = False)
+    train_loader = torch.utils.data.DataLoader(t_data, batch_size=batch_size, collate_fn=pad_packed_collate, shuffle=True, drop_last=True)
 
     print("Training...")
     for epoch in range(0, n_epochs):
-        for n, (bytes_tensor, enc_tensor) in enumerate(train_loader):
+        for n, (bytes_tensor, enc_tensor, _) in enumerate(train_loader):
 
             optimizer.zero_grad()
 
-            packed_output = model(bytes_tensor, batch_size)
-            output, _ = pad_packed_sequence(packed_output)
-
-            loss = criterion(output[-1], torch.max(enc_tensor, 1)[1])
+            outputs, _ = model(bytes_tensor)
+            loss = criterion(outputs, enc_tensor)
             loss.backward()
 
             optimizer.step()
 
-            print(str(epoch+1)+"/"+str(n_epochs) + "  " + str(n * batch_size)+"/"+str(len(t_data)) + "  Loss: " + str(round(loss.item(),5)))
+            if n % 1000 == 0:
+                print(str(epoch+1) + "/" + str(n_epochs) + "  " + str(n * batch_size) + "/" + str(len(t_data)) + "  Loss: " + str(round(loss.item(),5)))
         print("Saving...")
         torch.save(model.state_dict(), "./out/model_output.pth")
+
 
 # Evaluation
 def evaluation():
     with open('cache/evaluation_data.pickle','rb') as h:
         e_data = pickle.load(h)
 
-    eval_loader = torch.utils.data.DataLoader(e_data, batch_size=1, shuffle = False)
+    eval_loader = torch.utils.data.DataLoader(e_data, batch_size=batch_size, collate_fn=pad_packed_collate, shuffle=False)
 
     print("Evaluating...")
-    test_model = RNN(input_size, hidden_size, layer_n, output_size)
+    test_model = LSTM(input_size, hidden_size, layer_n, output_size, ngpu).to(device)
     test_model.load_state_dict(torch.load("./out/model_output.pth"))
+    test_model.eval()
 
-    total = 0
-    correct = 0
-    correct_chardet = 0
+    model_predictions = []
+    chardet_predictions = []
+    labels = []
+    with torch.no_grad():
+        for n, (bytes_tensor, enc_tensor, enc_string) in enumerate(eval_loader):
 
-    for n, (bytes_tensor, enc_tensor, i, encoded) in enumerate(eval_loader):
+            outputs, _ = test_model(bytes_tensor)
 
-        output = test_model(bytes_tensor, 1)
-        _, predicted_encoding = torch.max(output[0][-1].data, 0)
+            label = list(enc_tensor.detach().cpu().numpy())
+            labels.extend(enc_tensor)
 
-        correct += (predicted_encoding == i).item()
+            model_prediction = list(torch.max(outputs, 1)[1].detach().cpu().numpy())
+            model_predictions.extend(model_prediction)
 
-        try:
-            chardet_predicted = encodings.index(chardet.detect(encoded[0])["encoding"])
-        except (ValueError):
-            chardet_predicted = -1
-        correct_chardet += (chardet_predicted == i).item()
+            for es in enc_string:
+                chardet_prediction = chardet.detect(es)["encoding"]
+                try:
+                    chardet_predictions.append(encodings.index(chardet_prediction))
+                except (ValueError):
+                    chardet_predictions.append(0)
 
-        total += 1
+            if n % 1000 == 0:
+                print(str(n * batch_size) + "/" + str(len(e_data)))
 
-        print(i.item(), predicted_encoding.item(), chardet_predicted)
-
-    print("This model: " + str(round(correct/total,5)) + "\tChardet: " + str(round(correct_chardet/total,5)))
+    print("Model Accuracy: " + str(sklearn.metrics.accuracy_score(labels, model_predictions,)))
+    print("Model Precision: " + str(sklearn.metrics.precision_score(labels, model_predictions)))
+    print("Model Recall: " + str(sklearn.metrics.recall_score(labels, model_predictions)))
+    print("Model F1 Score: " + str(sklearn.metrics.f1_score(labels, model_predictions)))
+    print("Chardet Accuracy: " + str(sklearn.metrics.accuracy_score(labels, chardet_predictions)))
+    print("Chardet Precision: " + str(sklearn.metrics.precision_score(labels, chardet_predictions)))
+    print("Chardet Recall: " + str(sklearn.metrics.recall_score(labels, chardet_predictions)))
+    print("Chardet F1 Score: " + str(sklearn.metrics.f1_score(labels, chardet_predictions)))
 
 
 # main
