@@ -33,7 +33,7 @@ encodings = [ "Windows-1252"
             ]
 n_classes = len(encodings)
 
-batch_size = 25
+batch_size = 100
 n_epochs = 1
 
 input_size = 3
@@ -75,6 +75,8 @@ def preprocess_data():
                 continue
             else:
                 for enc_string, label in zip(enc_strings, labels):
+                    print(string)
+                    print(enc_strings)
                     bytes = [x for x in enc_string]
 
                     # bigrams, or maybe "bi-bytes"?
@@ -210,20 +212,19 @@ def training():
 
             optimizer.step()
 
-            if n % 1000 == 0:
-                print(str(epoch+1) + "/" + str(n_epochs) + "  " + str(n * batch_size) + "/" + str(len(t_data)) + "  Loss: " + str(round(loss.item(),5)))
+            print(str(epoch+1) + "/" + str(n_epochs) + "  " + str(n * batch_size) + "/" + str(len(t_data)) + "  Loss: " + str(round(loss.item(),5)))
         print("Saving...")
         torch.save(model.state_dict(), "./out/model_output.pth")
 
 
-# Evaluation
-def evaluation():
+# Evaluation on model
+def evaluation_model():
     with open('cache/evaluation_data.pickle','rb') as h:
         e_data = pickle.load(h)
 
     eval_loader = torch.utils.data.DataLoader(e_data, batch_size=batch_size, collate_fn=pad_packed_collate, shuffle=False)
 
-    print("Evaluating...")
+    print("Evaluating model...")
     test_model = LSTM(input_size, hidden_size, layer_n, output_size, ngpu).to(device)
     test_model.load_state_dict(torch.load("./out/model_output.pth"))
     test_model.eval()
@@ -242,28 +243,71 @@ def evaluation():
             model_prediction = list(torch.max(outputs, 1)[1].detach().cpu().numpy())
             model_predictions.extend(model_prediction)
 
-            for es in enc_string:
-                chardet_prediction = chardet.detect(es)["encoding"]
-                try:
-                    chardet_predictions.append(encodings.index(chardet_prediction))
-                except (ValueError):
-                    chardet_predictions.append(0)
-
-            if n % 1000 == 0:
+            if n % 100 == 0:
                 print(str(n * batch_size) + "/" + str(len(e_data)))
 
-    print("Model Accuracy: " + str(sklearn.metrics.accuracy_score(labels, model_predictions,)))
+    print("Model Accuracy: " + str(sklearn.metrics.accuracy_score(labels, model_predictions)))
     print("Model Precision: " + str(sklearn.metrics.precision_score(labels, model_predictions)))
     print("Model Recall: " + str(sklearn.metrics.recall_score(labels, model_predictions)))
     print("Model F1 Score: " + str(sklearn.metrics.f1_score(labels, model_predictions)))
+    print("Model Confusion Matrix: " + str(sklearn.metrics.confusion_matrix(labels, model_predictions)))
+
+# Evaluation on chardet
+def evaluation_chardet():
+    with open('cache/evaluation_data.pickle','rb') as h:
+        e_data = pickle.load(h)
+
+    print("Evaluating chardet...")
+    chardet_predictions = []
+    labels = []
+    for n, (bytes_tensor, enc_tensor, enc_string) in enumerate(e_data):
+
+        label = enc_tensor.detach().cpu().numpy()
+        labels.append(label)
+
+        # Get chardet version 4.0.0 if this doesn't work
+        chardet_prediction = chardet.detect_all(enc_string)
+
+        # Only compare the UTF-8 and Windows-1252 predictions
+        # This skips bugs in chardet's Korean CP949 and Turkish Windows-1254/ISO-8859-9 detectors
+        utf8 = 0
+        windows1252 = 0
+        for e in chardet_prediction:
+            if e["encoding"] == "utf-8":
+                utf8 = e["confidence"]
+
+            # ISO-8859-1 is a subset of Windows-1252, treat them the same
+            elif (e["encoding"] in ["Windows-1252", "ISO-8859-1"]) and e["confidence"] > windows1252:
+                windows1252 = e["confidence"]
+
+        if utf8 > windows1252:
+            chardet_prediction_ = 1
+        elif utf8 < windows1252:
+            chardet_prediction_ = 0
+        # If chardet detects neither..., default to Windows-1252 for output purposes
+        else:
+            print("Tie in chardet prediction")
+            print(label, chardet_prediction, enc_string)
+            chardet_prediction_ = 0
+
+        if label == 0 and chardet_prediction_ == 1:
+            print("label: ", label, "predicted: ", chardet_prediction_, enc_string)
+
+        chardet_predictions.append(chardet_prediction_)
+
+        if n % 1000 == 0:
+            print(str(n) + "/" + str(len(e_data)))
+
     print("Chardet Accuracy: " + str(sklearn.metrics.accuracy_score(labels, chardet_predictions)))
     print("Chardet Precision: " + str(sklearn.metrics.precision_score(labels, chardet_predictions)))
     print("Chardet Recall: " + str(sklearn.metrics.recall_score(labels, chardet_predictions)))
     print("Chardet F1 Score: " + str(sklearn.metrics.f1_score(labels, chardet_predictions)))
+    print("Chardet Confusion Matrix: " + str(sklearn.metrics.confusion_matrix(labels, chardet_predictions)))
 
 
 # main
 if __name__ == "__main__":
-    #preprocess_data()
+    preprocess_data()
     training()
-    evaluation()
+    evaluation_model()
+    evaluation_chardet()

@@ -1,0 +1,147 @@
+stuff held constant:
+  n_classes = 2
+
+  lr = 0.0001
+  criterion = nn.NLLLoss()
+  optimizer = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
+  batch_size = 100
+  n_epochs = 1
+
+  input_size = 3
+  layer_n = 1
+
+
+hidden_size = (see below)
+
+Confusion matrix read as:
+             Predicted class
+True class [[              ]
+            [              ]]
+
+4 units:
+Model Accuracy: 0.5102648973510265
+Model Precision: 0.5058022683889994
+Model Recall: 0.9991620613291303
+Model F1 Score: 0.6716151700461324
+Model Confusion Matrix: [[  946 48932]
+                         [   42 50081]]
+
+
+8 units:
+Model Accuracy: 0.7091729082709173
+Model Precision: 0.6393082260712961
+Model Recall: 0.9631905512439399
+Model F1 Score: 0.768519329189185
+Model Confusion Matrix: [[22640 27238]
+                         [ 1845 48278]]
+
+16 units:
+Model Accuracy: 0.7823621763782362
+Model Precision: 0.7690045721007001
+Model Recall: 0.8087105719928974
+Model F1 Score: 0.788357936091176
+Model Confusion Matrix: [[37702 12176]
+                         [ 9588 40535]]
+
+32 units:
+Model Accuracy: 0.977040229597704
+Model Precision: 0.9926250952763529
+Model Recall: 0.9613351156155857
+Model F1 Score: 0.9767295724971116
+Model Confusion Matrix: [[49520   358]
+                         [ 1938 48185]]
+
+64 units:
+Model Accuracy: 0.984690153098469
+Model Precision: 0.992599651271238
+Model Recall: 0.9767372264229994
+Model F1 Score: 0.9846045552818139
+Model Confusion Matrix: [[49513   365]
+                         [ 1166 48957]]
+
+
+128 units:
+Model Accuracy: 0.995960040399596
+Model Precision: 0.9939006218584229
+Model Recall: 0.9980647606887058
+Model F1 Score: 0.9959783387751852
+Model Confusion Matrix: [[49571   307]
+                         [   97 50026]]
+
+
+256 units:
+Model Accuracy: 0.998160018399816
+Model Precision: 0.9970340585624141
+Model Recall: 0.9993017177742752
+Model F1 Score: 0.9981666002391391
+Model Confusion Matrix: [[49729   149]
+                         [   35 50088]]
+
+
+512 units:
+Model Accuracy: 0.999230007699923
+Model Precision: 0.9986648066958947
+Model Recall: 0.9998004907926501
+Model F1 Score: 0.9992323260520621
+Model Confusion Matrix: [[49811    67]
+                         [   10 50113]]
+
+
+Examples of the 512 hidden unit model screwing up:
+1. Detected as UTF-8 when it was really Windows-1252:
+  b'11\x97and wider U.S.-British relations.'
+which can't be decoded as UTF-8
+it should be decoded (Windows-1252) as:
+  11—and wider U.S.-British relations.
+
+2. Detected as Windows-1252 when it was really UTF-8:
+  b'Yogurtini\xc3\xa2\xe2\x80\x9e\xc2\xa2 only serves real yogurt that contains live and active cultures approved by the National Yogurt Association.'
+which decodes (Windows-1252) as:
+  YogurtiniÃ¢â€žÂ¢ only serves real yogurt that contains live and active cultures approved by the National Yogurt Association.
+when it should be decoded (UTF-8) as:
+  Yogurtiniâ„¢ only serves real yogurt that contains live and active cultures approved by the National Yogurt Association.
+This appears to be because of an error in the original News Crawl 2009 Dataset though, *another* encoding detector screwed up Yogurtini™
+
+
+
+chardet results:
+Chardet Accuracy: 0.7340426595734043
+Chardet Precision: 0.9972103639207067
+Chardet Recall: 0.47070207290066435
+Chardet F1 Score: 0.6395326773467782
+Chardet Confusion Matrix: [[49812    66]
+                           [26530 23593]]
+
+
+Examples of chardet screwing up:
+1. Detected as UTF-8 when it was really Windows-1252:
+  b'Interested in learning how we can help you close regulatory gaps and reduce sensitive data leaks on BlackBerry\xc3\x82\xc2\xae or Windows Mobile?'
+which decodes (UTF-8) as:
+  Interested in learning how we can help you close regulatory gaps and reduce sensitive data leaks on BlackBerryÂ® or Windows Mobile?
+when it should be decoded (Windows-1252) as:
+  Interested in learning how we can help you close regulatory gaps and reduce sensitive data leaks on BlackBerryÃ‚Â® or Windows Mobile?'
+This appears to be because of an error in the original News Crawl 2009 Dataset though, *another* encoding detector screwed up BlackBerry®
+
+2. Detected as Windows-1252 when it was really UTF-8:
+  b'Still, I think "Sir Andr\xc3\xa9" has a certain ring.'
+which decodes (Windows-1252) as:
+  Still, I think "Sir AndrÃ©" has a certain ring.
+when it should be decoded (UTF-8) as:
+  Still, I think "Sir André" has a certain ring.
+
+
+
+Discussion:
+With only 16 hidden units, my model surpasses chardet's accuracy.
+However, precision isn't surpassed until the 512 hidden unit model.
+Because of charset's abysmal recall, even the 4 hidden unit model has a better f1 score.
+The 4 hidden unit model basically guessed UTF-8 for everything.
+
+The News Crawl 2009 corpus contains encoding errors in it, probably from using a subpar encoding detector.
+Just about all the false positives (all 66 of them) from running chardet on the evaluation set were because of this.
+My models have a slight advantage because they trained on a "polluted" dataset.
+
+I actually discovered a bug in chardet when doing all these experiments.
+For one of the byte sequences in the evaluation set, chardet returned "CP949" (Korean) as the encoding with the highest confidence.
+But trying to encode that byte sequence with "CP949" returned a Unicode error "llegal multibyte sequence".
+This bug has since been reported on the chardet github.
